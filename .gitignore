@@ -47,3 +47,4 @@ build/
 ### Scala ###
 .bsp/
 
+flight_cache
