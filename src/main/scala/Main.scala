@@ -23,7 +23,7 @@ object Main extends IOApp.Simple {
   private val friendAirports: Set[String] = Set("BOS", "AUS", "LAX")
 
   // safety cap on SerpAPI calls per weekly run
-  private val maxApiCallsPerRun = 3
+  private val maxApiCallsPerRun = 150
 
   // SerpAPI time format: "2023-10-03 15:10"
   private val serpTimeFmt: DateTimeFormatter =
@@ -36,8 +36,16 @@ object Main extends IOApp.Simple {
   )
 
   // Default: no restrictions (anything is acceptable)
-  private val outboundWindow: DepartureWindow = DepartureWindow(Some(LocalTime.of(18, 0)), None)
-  private val returnWindow: DepartureWindow = DepartureWindow(None, LocalTime.of(21, 0))
+  private val outboundWindow: DepartureWindow = DepartureWindow(
+//    earliest = Some(LocalTime.of(18, 0)),
+    earliest = None,
+    latest = None
+  )
+  private val returnWindow: DepartureWindow = DepartureWindow(
+    earliest = None,
+//    latest = Some(LocalTime.of(21, 0))
+    latest = None
+  )
 
   private def weekendKey(d: LocalDate): LocalDate = {
     var date = d
@@ -178,29 +186,26 @@ object Main extends IOApp.Simple {
 
     toCall.traverse { bucket =>
       val depart = bucket.key.weekendStart
-      val ret = depart.plusDays(2) // Fri -> Sun
+      val ret = depart.plusDays(2)
 
       IO.println(
         s"Querying flights for $originAirport -> ${bucket.key.airport.code} ($depart to $ret)"
       ) *>
         client
-          .cheapestRoundTrip(
-            originAirport,
-            bucket.key.airport.code,
-            depart,
-            ret
-          )
-          .map { quoteOpt =>
+          .roundTripOptions(originAirport, bucket.key.airport.code, depart, ret)
+          .map { quotes =>
             val isFriend = friendAirports.contains(bucket.key.airport.code)
-            WeekendQuote(bucket, quoteOpt, isFriend)
+            val cheapest = quotes.sortBy(_.priceUsd).headOption
+            WeekendQuote(bucket, cheapest, isFriend)
           }
     }
   }
 
   def run: IO[Unit] =
     HttpClientCatsBackend.resource[IO]().use { backend =>
-      val apiKey = sys.env.getOrElse("SERPAPI_KEY", "KEY GOES HERE")
-      val flightsClient = new FlightsClient(backend, apiKey)
+      val apiKey = sys.env.getOrElse("SERPAPI_KEY", "KEYHERE")
+      val flightsClient =
+        new FlightsClient(backend, apiKey, Paths.get("flight_cache"))
 
       for {
         // scrape tournaments
@@ -222,21 +227,21 @@ object Main extends IOApp.Simple {
              )
 
         // in-memory cheap subset with time window filters
-        cheap = weekendQuotes.collect {
-                  case wq @ WeekendQuote(_, Some(q), _)
-                      if q.priceUsd <= 100 &&
-                        withinWindow(q.outboundDepartureTime, outboundWindow) &&
-                        withinWindow(q.returnDepartureTime, returnWindow) =>
-                    wq
-                }
+        filteredWeekends = weekendQuotes.collect {
+                             case wq @ WeekendQuote(_, Some(q), _)
+                                 if (q.priceUsd <= 100 || (wq.isFriendAirport && q.priceUsd <= 200)) &&
+                                   withinWindow(q.outboundDepartureTime, outboundWindow) &&
+                                   withinWindow(q.returnDepartureTime, returnWindow) =>
+                               wq
+                           }
 
         // table: all queried weekends
         _ <- IO.println("\n=== All weekend quotes (queried) ===\n")
         _ <- IO.println(formatTable(weekendQuotes))
 
         // table: cheap subset
-        _ <- IO.println(s"\n=== Cheap weekends (<= $$100) ===\nCount: ${cheap.size}\n")
-        _ <- IO.println(formatTable(cheap))
+        _ <- IO.println(s"\n=== Filtered weekends ===\nCount: ${filteredWeekends.size}\n")
+        _ <- IO.println(formatTable(filteredWeekends))
 
         // CSV output (all queried weekends)
         _ <- writeCsv(weekendQuotes, "weekend_quotes.csv")
