@@ -1,6 +1,6 @@
 # TourneyFlights
 
-A small Scala app that scrapes upcoming USATT table-tennis tournaments and checks flight prices (via SerpApi → Google Flights) for the next 3 months. It outputs a table + CSV so you can quickly see which cities are worth flying to.
+A small Scala app that scrapes upcoming USATT table-tennis tournaments and checks flight prices (via SerpApi → Google Flights) for the next 3 months. It outputs a table so you can quickly see which cities are worth flying to.
 
 ---
 
@@ -51,4 +51,4 @@ Ensure `.env` is in the same directory as the JAR or your run command.
 java -jar tourneyFlights.jar
 ```
 
-The app will create a  file called `all_flights.csv` and a file called `ideal_flights.csv`.
+The app will create a  file called `all_flights.md` and a file called `ideal_flights.md`.

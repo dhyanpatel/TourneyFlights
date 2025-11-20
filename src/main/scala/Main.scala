@@ -25,31 +25,32 @@ object Main extends IOApp.Simple {
   private val serpTimeFormat: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-  private val csvFilenameTimeFormat: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
+  private val fileTimestampFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 
   private final case class DepartureWindow(
-      earliest: Option[LocalTime],
-      latest: Option[LocalTime]
-  )
+                                            earliest: Option[LocalTime],
+                                            latest: Option[LocalTime]
+                                          )
 
   private final case class AppConfig(
-      apiKey: String,
-      originAirport: String,
-      friendAirports: Set[String],
-      maxApiCallsPerRun: Int,
-      filterMonths: Long,
-      maxPriceBase: Int,
-      maxPriceFriend: Int,
-      outboundWindow: DepartureWindow,
-      returnWindow: DepartureWindow
-  )
+                                      apiKey: String,
+                                      originAirport: String,
+                                      friendAirports: Set[String],
+                                      maxApiCallsPerRun: Int,
+                                      filterMonths: Long,
+                                      maxPriceBase: Int,
+                                      maxPriceFriend: Int,
+                                      outboundWindow: DepartureWindow,
+                                      returnWindow: DepartureWindow
+                                    )
 
-  private def weekendKey(d: LocalDate): LocalDate = d.`with`(TemporalAdjusters.previousOrSame(DayOfWeek.FRIDAY))
+  private def weekendKey(d: LocalDate): LocalDate =
+    d.`with`(TemporalAdjusters.previousOrSame(DayOfWeek.FRIDAY))
 
   private def toWeekendBuckets(
-      tournaments: List[Tournament]
-  ): List[WeekendBucket] = {
+                                tournaments: List[Tournament]
+                              ): List[WeekendBucket] = {
     val withMetros = tournaments.flatMap { t =>
       MetroMapping.airportFor(t.city, t.stateOrRegion).map(a => (t, a))
     }
@@ -61,9 +62,9 @@ object Main extends IOApp.Simple {
   }
 
   private def filterNextMonths(
-      buckets: List[WeekendBucket],
-      months: Long
-  ): List[WeekendBucket] = {
+                                buckets: List[WeekendBucket],
+                                months: Long
+                              ): List[WeekendBucket] = {
     val today = LocalDate.now()
     val cutoff = today.plusMonths(months)
 
@@ -89,7 +90,7 @@ object Main extends IOApp.Simple {
       case None => true
       case Some(t) =>
         window.earliest.forall(!t.isBefore(_)) &&
-        window.latest.forall(!t.isAfter(_))
+          window.latest.forall(!t.isAfter(_))
     }
   }
 
@@ -125,15 +126,26 @@ object Main extends IOApp.Simple {
     (header +: rows).mkString("\n")
   }
 
-  private def writeCsv(list: List[WeekendQuote], prefix: String): IO[Path] =
+  private def writeMarkdownReport(
+                                   prefix: String,
+                                   title: String,
+                                   list: List[WeekendQuote]
+                                 ): IO[Path] =
     IO {
       val generatedAt = LocalDateTime.now()
-      val generatedAtStr = generatedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-      val timestamp = generatedAt.format(csvFilenameTimeFormat)
-      val fileName = s"${prefix}_$timestamp.csv"
+      val generatedAtStr =
+        generatedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+      val timestamp = generatedAt.format(fileTimestampFormat)
+      val fileName = s"${prefix}_${timestamp}.md"
 
-      val header =
-        "airport,weekend,price,friend,outbound_departure,outbound_arrival,return_departure,return_arrival,tournaments"
+      val headerLines = List(
+        s"# $title",
+        "",
+        s"_Generated at: $generatedAtStr",
+        "",
+        "| Airport | Weekend | Price | Friend | Outbound Departure | Outbound Arrival | Return Departure | Return Arrival | Tournaments |",
+        "|--------|---------|-------|--------|---------------------|------------------|------------------|----------------|------------|"
+      )
 
       val rows = list.map { wq =>
         val code = wq.bucket.key.airport.code
@@ -143,34 +155,34 @@ object Main extends IOApp.Simple {
         val (priceStr, outDep, outArr, retDep, retArr) = wq.quote match {
           case Some(q) =>
             (
-              q.priceUsd.toString,
-              q.outboundDepartureTime,
-              q.outboundArrivalTime,
-              q.returnDepartureTime,
-              q.returnArrivalTime
+              s"$$${q.priceUsd}",
+              Option(q.outboundDepartureTime).getOrElse(""),
+              Option(q.outboundArrivalTime).getOrElse(""),
+              Option(q.returnDepartureTime).getOrElse(""),
+              Option(q.returnArrivalTime).getOrElse("")
             )
           case None =>
-            ("", "", "", "", "")
+            ("no-price", "", "", "", "")
         }
 
         val ts = wq.bucket.tournaments
           .map(t => s"${t.name} (${t.city}, ${t.stateOrRegion}, ${t.rawDateText})")
-          .mkString(" | ")
+          .mkString("<br>")
 
-        s"$code,$wk,$priceStr,$friend,\"$outDep\",\"$outArr\",\"$retDep\",\"$retArr\",\"$ts\""
+        s"| $code | $wk | $priceStr | $friend | $outDep | $outArr | $retDep | $retArr | $ts |"
       }
 
-      val full = (header +: rows).mkString("\n")
+      val full = (headerLines ++ rows).mkString("\n")
       val path = Paths.get(fileName)
       Files.write(path, full.getBytes(StandardCharsets.UTF_8))
       path
     }
 
   private def fetchWeekendQuotes(
-      client: FlightsClient,
-      buckets: List[WeekendBucket],
-      config: AppConfig
-  ): IO[List[WeekendQuote]] = {
+                                  client: FlightsClient,
+                                  buckets: List[WeekendBucket],
+                                  config: AppConfig
+                                ): IO[List[WeekendQuote]] = {
     val sorted = buckets.sortBy(b => (b.key.weekendStart, b.key.airport.code))
     val toCall = sorted.take(config.maxApiCallsPerRun)
 
@@ -223,7 +235,8 @@ object Main extends IOApp.Simple {
     val fileEnv = readEnvFile(Paths.get(".env"))
     val env: Map[String, String] = sys.env ++ fileEnv
 
-    def get(key: String): Option[String] = env.get(key).map(_.trim).filter(_.nonEmpty)
+    def get(key: String): Option[String] =
+      env.get(key).map(_.trim).filter(_.nonEmpty)
 
     val apiKey =
       get("SERPAPI_KEY").getOrElse("KEYHERE")
@@ -294,14 +307,14 @@ object Main extends IOApp.Simple {
 
         weekendBucketsAll = toWeekendBuckets(tournaments)
         _ <- IO.println(
-               s"Total metro/weekend buckets (all): ${weekendBucketsAll.size}"
-             )
+          s"Total metro/weekend buckets (all): ${weekendBucketsAll.size}"
+        )
 
         weekendBuckets =
           filterNextMonths(weekendBucketsAll, config.filterMonths)
         _ <- IO.println(
-               s"Buckets within next ${config.filterMonths} months: ${weekendBuckets.size}"
-             )
+          s"Buckets within next ${config.filterMonths} months: ${weekendBuckets.size}"
+        )
 
         weekendQuotes <- fetchWeekendQuotes(flightsClient, weekendBuckets, config)
         _ <-
@@ -310,33 +323,41 @@ object Main extends IOApp.Simple {
           )
 
         filteredWeekends = weekendQuotes.collect {
-                             case wq @ WeekendQuote(_, Some(q), _)
-                                 if (q.priceUsd <= config.maxPriceBase ||
-                                   (wq.isFriendAirport && q.priceUsd <= config.maxPriceFriend)) &&
-                                   withinWindow(
-                                     q.outboundDepartureTime,
-                                     config.outboundWindow
-                                   ) &&
-                                   withinWindow(
-                                     q.returnDepartureTime,
-                                     config.returnWindow
-                                   ) =>
-                               wq
-                           }
+          case wq @ WeekendQuote(_, Some(q), _)
+            if (q.priceUsd <= config.maxPriceBase ||
+              (wq.isFriendAirport && q.priceUsd <= config.maxPriceFriend)) &&
+              withinWindow(
+                q.outboundDepartureTime,
+                config.outboundWindow
+              ) &&
+              withinWindow(
+                q.returnDepartureTime,
+                config.returnWindow
+              ) =>
+            wq
+        }
 
         _ <- IO.println("\n=== All weekend quotes (queried) ===\n")
         _ <- IO.println(formatTable(weekendQuotes))
 
         _ <- IO.println(
-               s"\n=== Filtered weekends ===\nCount: ${filteredWeekends.size}\n"
-             )
+          s"\n=== Filtered weekends ===\nCount: ${filteredWeekends.size}\n"
+        )
         _ <- IO.println(formatTable(filteredWeekends))
 
-        allCsvPath <- writeCsv(weekendQuotes, "all_flights")
-        _ <- IO.println(s"\nCSV written to $allCsvPath")
+        allMdPath <- writeMarkdownReport(
+          prefix = "all_flights",
+          title = "All Flight Quotes",
+          list = weekendQuotes
+        )
+        _ <- IO.println(s"\nMarkdown written to $allMdPath")
 
-        idealCsvPath <- writeCsv(filteredWeekends, "ideal_flights")
-        _ <- IO.println(s"CSV written to $idealCsvPath")
+        idealMdPath <- writeMarkdownReport(
+          prefix = "ideal_flights",
+          title = "Ideal Flight Quotes",
+          list = filteredWeekends
+        )
+        _ <- IO.println(s"Markdown written to $idealMdPath")
       } yield ()
     }
 }
