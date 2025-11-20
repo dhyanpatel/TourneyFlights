@@ -49,3 +49,5 @@ build/
 
 flight_cache
 weekend_quotes.csv
+
+.env

@@ -4,6 +4,7 @@ import cats.syntax.traverse._
 import flights.FlightsClient
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
@@ -12,17 +13,14 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import models._
+import scala.jdk.CollectionConverters._
+import scala.util.Try
 import scraper.TournamentScraper
 import sttp.client3._
 import sttp.client3.httpclient.cats.HttpClientCatsBackend
 
 object Main extends IOApp.Simple {
   private val omnipongUrl = uri"https://omnipong.com/t-tourney.asp?e=0"
-  private val originAirport = "ORD"
-
-  private val friendAirports: Set[String] = Set("BOS", "AUS", "LAX")
-
-  private val maxApiCallsPerRun = 150
 
   private val serpTimeFormat: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -32,14 +30,16 @@ object Main extends IOApp.Simple {
       latest: Option[LocalTime]
   )
 
-  private val outboundWindow: DepartureWindow = DepartureWindow(
-    earliest = None,
-    latest = None
-  )
-
-  private val returnWindow: DepartureWindow = DepartureWindow(
-    earliest = None,
-    latest = None
+  private final case class AppConfig(
+      apiKey: String,
+      originAirport: String,
+      friendAirports: Set[String],
+      maxApiCallsPerRun: Int,
+      filterMonths: Long,
+      maxPriceBase: Int,
+      maxPriceFriend: Int,
+      outboundWindow: DepartureWindow,
+      returnWindow: DepartureWindow
   )
 
   private def weekendKey(d: LocalDate): LocalDate = d.`with`(TemporalAdjusters.previousOrSame(DayOfWeek.FRIDAY))
@@ -57,11 +57,12 @@ object Main extends IOApp.Simple {
       .map { case (key, list) => WeekendBucket(key, list.map(_._1)) }
   }
 
-  private def filterNextThreeMonths(
-      buckets: List[WeekendBucket]
+  private def filterNextMonths(
+      buckets: List[WeekendBucket],
+      months: Long
   ): List[WeekendBucket] = {
     val today = LocalDate.now()
-    val cutoff = today.plusMonths(3)
+    val cutoff = today.plusMonths(months)
 
     buckets.filter { b =>
       val d = b.key.weekendStart
@@ -69,7 +70,7 @@ object Main extends IOApp.Simple {
     }
   }
 
-  private def parseLocalTimeOrNone(s: String): Option[LocalTime] =
+  private def parseLocalTimeFromFlightString(s: String): Option[LocalTime] =
     if (s == null || s.isEmpty) None
     else
       try
@@ -81,7 +82,7 @@ object Main extends IOApp.Simple {
   private def withinWindow(timeStr: String, window: DepartureWindow): Boolean = {
     if (window.earliest.isEmpty && window.latest.isEmpty) return true
 
-    parseLocalTimeOrNone(timeStr) match {
+    parseLocalTimeFromFlightString(timeStr) match {
       case None => true
       case Some(t) =>
         window.earliest.forall(!t.isBefore(_)) &&
@@ -157,37 +158,123 @@ object Main extends IOApp.Simple {
 
   private def fetchWeekendQuotes(
       client: FlightsClient,
-      buckets: List[WeekendBucket]
+      buckets: List[WeekendBucket],
+      config: AppConfig
   ): IO[List[WeekendQuote]] = {
     val sorted = buckets.sortBy(b => (b.key.weekendStart, b.key.airport.code))
-    val toCall = sorted.take(maxApiCallsPerRun)
+    val toCall = sorted.take(config.maxApiCallsPerRun)
 
     toCall.traverse { bucket =>
       val depart = bucket.key.weekendStart
       val ret = depart.plusDays(2)
 
       IO.println(
-        s"Querying flights for $originAirport -> ${bucket.key.airport.code} ($depart to $ret)"
+        s"Querying flights for ${config.originAirport} -> ${bucket.key.airport.code} ($depart to $ret)"
       ) *>
         client
-          .roundTripOptions(originAirport, bucket.key.airport.code, depart, ret)
+          .roundTripOptions(
+            config.originAirport,
+            bucket.key.airport.code,
+            depart,
+            ret
+          )
           .map { quotes =>
-            val isFriend = friendAirports.contains(bucket.key.airport.code)
+            val isFriend =
+              config.friendAirports.contains(bucket.key.airport.code)
             val cheapest = quotes.sortBy(_.priceUsd).headOption
             WeekendQuote(bucket, cheapest, isFriend)
           }
     }
   }
 
+  private def readEnvFile(path: Path): Map[String, String] =
+    if (!Files.exists(path)) Map.empty
+    else {
+      val lines = Files.readAllLines(path, StandardCharsets.UTF_8).asScala.toList
+      lines
+        .map(_.trim)
+        .filter(l => l.nonEmpty && !l.startsWith("#"))
+        .flatMap { line =>
+          val idx = line.indexOf('=')
+          if (idx > 0) {
+            val key = line.substring(0, idx).trim
+            val value = line.substring(idx + 1).trim
+            if (key.nonEmpty) Some(key -> value) else None
+          } else None
+        }
+        .toMap
+    }
+
+  private def parseTimeConfig(value: String): Option[LocalTime] =
+    if (value == null || value.trim.isEmpty) None
+    else Try(LocalTime.parse(value.trim)).toOption
+
+  private def loadConfig(): AppConfig = {
+    val fileEnv = readEnvFile(Paths.get(".env"))
+    val env: Map[String, String] = sys.env ++ fileEnv
+
+    def get(key: String): Option[String] = env.get(key).map(_.trim).filter(_.nonEmpty)
+
+    val apiKey =
+      get("SERPAPI_KEY").getOrElse("KEYHERE")
+
+    val originAirport =
+      get("ORIGIN_AIRPORT").getOrElse("ORD")
+
+    val friendAirports =
+      get("FRIEND_AIRPORTS")
+        .map(_.split(",").toList.map(_.trim).filter(_.nonEmpty).toSet)
+        .getOrElse(Set("BOS", "AUS", "LAX"))
+
+    val maxApiCallsPerRun =
+      get("MAX_API_CALLS_PER_RUN")
+        .flatMap(v => Try(v.toInt).toOption)
+        .getOrElse(150)
+
+    val filterMonths =
+      get("FILTER_MONTHS")
+        .flatMap(v => Try(v.toLong).toOption)
+        .getOrElse(3L)
+
+    val maxPriceBase =
+      get("MAX_PRICE_BASE")
+        .flatMap(v => Try(v.toInt).toOption)
+        .getOrElse(150)
+
+    val maxPriceFriend =
+      get("MAX_PRICE_FRIEND")
+        .flatMap(v => Try(v.toInt).toOption)
+        .getOrElse(250)
+
+    val outboundWindow = DepartureWindow(
+      earliest = get("OUTBOUND_EARLIEST").flatMap(parseTimeConfig),
+      latest = get("OUTBOUND_LATEST").flatMap(parseTimeConfig)
+    )
+
+    val returnWindow = DepartureWindow(
+      earliest = get("RETURN_EARLIEST").flatMap(parseTimeConfig),
+      latest = get("RETURN_LATEST").flatMap(parseTimeConfig)
+    )
+
+    AppConfig(
+      apiKey = apiKey,
+      originAirport = originAirport,
+      friendAirports = friendAirports,
+      maxApiCallsPerRun = maxApiCallsPerRun,
+      filterMonths = filterMonths,
+      maxPriceBase = maxPriceBase,
+      maxPriceFriend = maxPriceFriend,
+      outboundWindow = outboundWindow,
+      returnWindow = returnWindow
+    )
+  }
+
   def run: IO[Unit] =
     HttpClientCatsBackend.resource[IO]().use { backend =>
-      val apiKey =
-        sys.env.getOrElse(
-          "SERPAPI_KEY",
-          "KEYHERE"
-        )
+      val config = loadConfig()
+
       val flightsClient =
-        new FlightsClient(backend, apiKey, Paths.get("flight_cache"))
+        new FlightsClient(backend, config.apiKey, Paths.get("flight_cache"))
 
       for {
         response <- basicRequest.get(omnipongUrl).send(backend)
@@ -200,22 +287,30 @@ object Main extends IOApp.Simple {
                s"Total metro/weekend buckets (all): ${weekendBucketsAll.size}"
              )
 
-        weekendBuckets = filterNextThreeMonths(weekendBucketsAll)
+        weekendBuckets =
+          filterNextMonths(weekendBucketsAll, config.filterMonths)
         _ <- IO.println(
-               s"Buckets within next 3 months: ${weekendBuckets.size}"
+               s"Buckets within next ${config.filterMonths} months: ${weekendBuckets.size}"
              )
 
-        weekendQuotes <- fetchWeekendQuotes(flightsClient, weekendBuckets)
-        _ <- IO.println(
-               s"Weekend buckets with flight data attempted (capped at $maxApiCallsPerRun): ${weekendQuotes.size}\n"
-             )
+        weekendQuotes <- fetchWeekendQuotes(flightsClient, weekendBuckets, config)
+        _ <-
+          IO.println(
+            s"Weekend buckets with flight data attempted (capped at ${config.maxApiCallsPerRun}): ${weekendQuotes.size}\n"
+          )
 
         filteredWeekends = weekendQuotes.collect {
                              case wq @ WeekendQuote(_, Some(q), _)
-                                 if (q.priceUsd <= 150 ||
-                                   (wq.isFriendAirport && q.priceUsd <= 250)) &&
-                                   withinWindow(q.outboundDepartureTime, outboundWindow) &&
-                                   withinWindow(q.returnDepartureTime, returnWindow) =>
+                                 if (q.priceUsd <= config.maxPriceBase ||
+                                   (wq.isFriendAirport && q.priceUsd <= config.maxPriceFriend)) &&
+                                   withinWindow(
+                                     q.outboundDepartureTime,
+                                     config.outboundWindow
+                                   ) &&
+                                   withinWindow(
+                                     q.returnDepartureTime,
+                                     config.returnWindow
+                                   ) =>
                                wq
                            }
 
