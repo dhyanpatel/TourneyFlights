@@ -1,4 +1,3 @@
-
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.3.7"
@@ -28,3 +27,16 @@ libraryDependencies ++= Seq(
   // Scala Scraper (cleaner JSoup wrapper)
   "net.ruippeixotog" %% "scala-scraper" % "3.2.0"
 )
+
+Compile / mainClass := Some("Main")
+assembly / assemblyJarName := "tourneyFlights.jar"
+
+import sbtassembly.MergeStrategy
+
+assembly / assemblyMergeStrategy := {
+  case path if path.endsWith("module-info.class") =>
+    MergeStrategy.discard
+
+  case other =>
+    (assembly / assemblyMergeStrategy).value(other)
+}
