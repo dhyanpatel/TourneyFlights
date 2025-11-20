@@ -25,6 +25,9 @@ object Main extends IOApp.Simple {
   private val serpTimeFormat: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
+  private val csvFilenameTimeFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
+
   private final case class DepartureWindow(
       earliest: Option[LocalTime],
       latest: Option[LocalTime]
@@ -122,8 +125,13 @@ object Main extends IOApp.Simple {
     (header +: rows).mkString("\n")
   }
 
-  private def writeCsv(list: List[WeekendQuote], path: String): IO[Unit] =
+  private def writeCsv(list: List[WeekendQuote], prefix: String): IO[Path] =
     IO {
+      val generatedAt = LocalDateTime.now()
+      val generatedAtStr = generatedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+      val timestamp = generatedAt.format(csvFilenameTimeFormat)
+      val fileName = s"${prefix}_$timestamp.csv"
+
       val header =
         "airport,weekend,price,friend,outbound_departure,outbound_arrival,return_departure,return_arrival,tournaments"
 
@@ -153,7 +161,9 @@ object Main extends IOApp.Simple {
       }
 
       val full = (header +: rows).mkString("\n")
-      Files.write(Paths.get(path), full.getBytes(StandardCharsets.UTF_8))
+      val path = Paths.get(fileName)
+      Files.write(path, full.getBytes(StandardCharsets.UTF_8))
+      path
     }
 
   private def fetchWeekendQuotes(
@@ -322,8 +332,11 @@ object Main extends IOApp.Simple {
              )
         _ <- IO.println(formatTable(filteredWeekends))
 
-        _ <- writeCsv(weekendQuotes, "weekend_quotes.csv")
-        _ <- IO.println("\nCSV written to weekend_quotes.csv")
+        allCsvPath <- writeCsv(weekendQuotes, "all_flights")
+        _ <- IO.println(s"\nCSV written to $allCsvPath")
+
+        idealCsvPath <- writeCsv(filteredWeekends, "ideal_flights")
+        _ <- IO.println(s"CSV written to $idealCsvPath")
       } yield ()
     }
 }

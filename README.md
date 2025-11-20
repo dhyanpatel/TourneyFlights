@@ -51,6 +51,4 @@ Ensure `.env` is in the same directory as the JAR or your run command.
 java -jar tourneyFlights.jar
 ```
 
-The app will create a  file called `weekend_quotes.csv` with **all** flights.
-
-To see the “ideal” flights (cheap or in a city with a friend), look at the printed output of the jar file.
+The app will create a  file called `all_flights.csv` and a file called `ideal_flights.csv`.
