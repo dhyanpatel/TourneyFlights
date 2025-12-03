@@ -6,14 +6,14 @@ import io.circe.Json
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.time.LocalDate
 import models.FlightQuote
 import sttp.client3._
+import sttp.model.StatusCode
 
 final class FlightsClient(
     backend: SttpBackend[IO, Any],
-    apiKey: String,
+    keyManager: ApiKeyManager,
     cacheDir: Path
 ) {
   private val baseUri = uri"https://serpapi.com/search.json"
@@ -69,19 +69,13 @@ final class FlightsClient(
                 .downField("time")
                 .as[String]
                 .getOrElse("")
-              val outArr = fc
+              val outArr = lc
                 .downField("arrival_airport")
                 .downField("time")
                 .as[String]
                 .getOrElse("")
-              val retDep = lc
-                .downField("departure_airport")
-                .downField("time")
-                .as[String]
-                .getOrElse("")
-              val retArr = lc
-                .downField("arrival_airport")
-                .downField("time")
+              val airline = fc
+                .downField("airline")
                 .as[String]
                 .getOrElse("")
 
@@ -94,8 +88,7 @@ final class FlightsClient(
                   priceUsd = BigDecimal(price),
                   outboundDepartureTime = outDep,
                   outboundArrivalTime = outArr,
-                  returnDepartureTime = retDep,
-                  returnArrivalTime = retArr
+                  airline = airline
                 )
               )
             case _ => None
@@ -113,7 +106,7 @@ final class FlightsClient(
   ): IO[List[FlightQuote]] = {
     val path = cacheDir.resolve(cacheKey(origin, dest, depart, ret))
 
-    val fetchFromApi: IO[Json] = {
+    def fetchFromApiWithKey(apiKey: String): IO[Either[Int, Json]] = {
       val req = basicRequest
         .get(
           baseUri
@@ -127,21 +120,43 @@ final class FlightsClient(
             .addParam("hl", "en")
             .addParam("api_key", apiKey)
         )
+        .response(asStringAlways)
 
       req.send(backend).flatMap { resp =>
-        resp.body match {
-          case Left(err) =>
-            IO.println(s"SerpAPI error: $err") *> IO.pure(Json.Null)
-          case Right(b) =>
-            parser.parse(b) match {
-              case Left(pe) =>
-                IO.println(s"JSON parse error: $pe") *> IO.pure(Json.Null)
-              case Right(json) =>
-                saveCachedJson(path, json) *> IO.pure(json)
-            }
+        if (resp.code == StatusCode.TooManyRequests) {
+          IO.pure(Left(429))
+        } else if (!resp.code.isSuccess) {
+          IO.println(s"SerpAPI error (${resp.code}): ${resp.body}") *> IO.pure(Right(Json.Null))
+        } else {
+          parser.parse(resp.body) match {
+            case Left(pe) =>
+              IO.println(s"JSON parse error: $pe") *> IO.pure(Right(Json.Null))
+            case Right(json) =>
+              saveCachedJson(path, json) *> IO.pure(Right(json))
+          }
         }
       }
     }
+
+    def fetchWithRetry: IO[Json] =
+      for {
+        apiKey <- keyManager.currentKey
+        keyIdx <- keyManager.currentIndex
+        _      <- IO.println(s"Using API key ${keyIdx + 1}/${keyManager.keyCount}")
+        result <- fetchFromApiWithKey(apiKey)
+        json   <- result match {
+                    case Right(j) => IO.pure(j)
+                    case Left(429) =>
+                      keyManager.rotateToNext.flatMap {
+                        case true =>
+                          IO.println("Rate limited (429), rotating to next API key...") *> fetchWithRetry
+                        case false =>
+                          IO.println("All API keys exhausted (429 on all). Returning empty.") *> IO.pure(Json.Null)
+                      }
+                    case Left(other) =>
+                      IO.println(s"Unexpected error code: $other") *> IO.pure(Json.Null)
+                  }
+      } yield json
 
     for {
       cached <- loadCachedJson(path)
@@ -153,7 +168,7 @@ final class FlightsClient(
                 case None =>
                   IO.println(
                     s"No cache for $origin -> $dest ($depart to $ret), calling SerpAPI"
-                  ) *> fetchFromApi
+                  ) *> fetchWithRetry
               }
       quotes = extractFlightQuotes(json, origin, dest, depart, ret)
     } yield quotes

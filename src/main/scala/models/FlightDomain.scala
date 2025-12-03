@@ -20,8 +20,7 @@ final case class FlightQuote(
     priceUsd: BigDecimal,
     outboundDepartureTime: String,
     outboundArrivalTime: String,
-    returnDepartureTime: String,
-    returnArrivalTime: String
+    airline: String
 )
 
 final case class WeekendQuote(
