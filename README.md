@@ -23,7 +23,7 @@ A Scala application that scrapes upcoming USATT table-tennis tournaments and che
 3. After logging in, open your Dashboard
 4. Copy your API key from the **API Key** section
 
-SerpApi gives you 100 free searches/month. You can configure multiple API keys for higher throughput.
+SerpApi gives you 250 free searches/month. You can configure multiple API keys for higher throughput.
 
 ---
 
