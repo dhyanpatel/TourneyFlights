@@ -74,6 +74,12 @@ const filters = ref<QuotesQueryParams>({
 // Config editing state (always editable, no toggle)
 const editingConfig = ref<SessionConfig>({});
 
+// Mobile sorting and pagination
+const mobileSortBy = ref<'price' | 'date' | 'airport'>('price');
+const mobileSortOrder = ref<'asc' | 'desc'>('asc');
+const mobilePageSize = 20;
+const mobilePage = ref(1);
+
 // Flight search state (inline in card, no modal)
 const searchRequest = ref<SearchFlightsRequest>({
   skipCache: false,
@@ -104,9 +110,9 @@ const totalQuotesFromApi = computed(() => {
 });
 
 // Flatten quotes for table display - each row is one quote
-// Compute isFriendAirport dynamically based on current config (not cached value from API)
+// Compute isFriendAirport dynamically based on editingConfig (the live editable state)
 const flattenedQuotes = computed<FlatQuoteRow[]>(() => {
-  const friendAirports = new Set(sessionStore.config.friendAirports || []);
+  const friendAirports = new Set(editingConfig.value.friendAirports || []);
   const rows: FlatQuoteRow[] = [];
   for (const wq of sessionStore.quotes) {
     // Compute isFriendAirport based on current config
@@ -128,6 +134,33 @@ const flattenedQuotes = computed<FlatQuoteRow[]>(() => {
   }
   return rows;
 });
+
+// Sorted and paginated quotes for mobile view
+const sortedMobileQuotes = computed(() => {
+  const sorted = [...flattenedQuotes.value].sort((a, b) => {
+    let comparison = 0;
+    switch (mobileSortBy.value) {
+      case 'price':
+        comparison = a.quote.priceUsd - b.quote.priceUsd;
+        break;
+      case 'date':
+        comparison = new Date(a.bucket.key.weekendStart).getTime() - new Date(b.bucket.key.weekendStart).getTime();
+        break;
+      case 'airport':
+        comparison = a.bucket.key.airport.localeCompare(b.bucket.key.airport);
+        break;
+    }
+    return mobileSortOrder.value === 'asc' ? comparison : -comparison;
+  });
+  return sorted;
+});
+
+const paginatedMobileQuotes = computed(() => {
+  const start = (mobilePage.value - 1) * mobilePageSize;
+  return sortedMobileQuotes.value.slice(start, start + mobilePageSize);
+});
+
+const mobileTotalPages = computed(() => Math.ceil(flattenedQuotes.value.length / mobilePageSize));
 
 // Table columns
 const columns: DataTableColumns<FlatQuoteRow> = [
@@ -273,14 +306,12 @@ watch(
 );
 
 function clearFilters(): void {
-  filters.value = {
-    airport: undefined,
-    state: undefined,
-    maxPrice: undefined,
-    search: '',
-    friendsOnly: false,
-    limit: undefined,
-  };
+  filters.value.airport = null as unknown as undefined;
+  filters.value.state = null as unknown as undefined;
+  filters.value.maxPrice = null as unknown as undefined;
+  filters.value.search = '';
+  filters.value.friendsOnly = false;
+  filters.value.limit = null as unknown as undefined;
 }
 
 // Format date for display
@@ -826,8 +857,8 @@ onMounted(() => {
         {{ sessionStore.error }}
       </NAlert>
 
-      <!-- Results Table -->
-      <NCard class="results-card">
+      <!-- Results Table (Desktop) -->
+      <NCard class="results-card desktop-table">
         <template #header>
           <NSpace align="center" justify="space-between">
             <NSpace align="center" size="small">
@@ -846,7 +877,6 @@ onMounted(() => {
           :loading="sessionStore.isLoadingQuotes"
           :pagination="{ pageSize: 50 }"
           :bordered="false"
-          :scroll-x="1000"
           striped
           size="small"
           :row-key="(row: FlatQuoteRow) => `${row.bucket.key.airport}-${row.bucket.key.weekendStart}-${row.quote.airline}-${row.quote.outboundDepartureTime}`"
@@ -858,6 +888,114 @@ onMounted(() => {
           style="padding: 48px 0"
         />
       </NCard>
+
+      <!-- Results Cards (Mobile) -->
+      <div class="mobile-cards">
+        <NSpace vertical size="small" style="margin-bottom: 12px;">
+          <NSpace align="center" justify="space-between">
+            <NSpace align="center" size="small">
+              <NText strong>Flight Quotes</NText>
+              <NTag v-if="flattenedQuotes.length > 0" size="small" type="info">
+                {{ flattenedQuotes.length }} quotes
+              </NTag>
+            </NSpace>
+            <NSpin v-if="sessionStore.isLoadingQuotes" size="small" />
+          </NSpace>
+          <!-- Sort controls -->
+          <NSpace v-if="flattenedQuotes.length > 0" align="center" size="small">
+            <NText depth="3" style="font-size: 12px;">Sort:</NText>
+            <NSelect
+              v-model:value="mobileSortBy"
+              size="tiny"
+              style="width: 90px;"
+              :options="[
+                { label: 'Price', value: 'price' },
+                { label: 'Date', value: 'date' },
+                { label: 'Airport', value: 'airport' },
+              ]"
+              @update:value="mobilePage = 1"
+            />
+            <NButton 
+              size="tiny" 
+              quaternary 
+              @click="mobileSortOrder = mobileSortOrder === 'asc' ? 'desc' : 'asc'; mobilePage = 1"
+            >
+              {{ mobileSortOrder === 'asc' ? '↑' : '↓' }}
+            </NButton>
+          </NSpace>
+        </NSpace>
+
+        <NSpin v-if="sessionStore.isLoadingQuotes" style="display: flex; justify-content: center; padding: 48px 0;" />
+
+        <div v-else-if="flattenedQuotes.length > 0" class="quote-cards">
+          <div 
+            v-for="(row, index) in paginatedMobileQuotes" 
+            :key="`${row.bucket.key.airport}-${row.bucket.key.weekendStart}-${row.quote.airline}-${index}`"
+            class="quote-card"
+          >
+            <div class="quote-card-header">
+              <div class="quote-price">${{ row.quote.priceUsd.toFixed(0) }}</div>
+              <div class="quote-meta">
+                <NTag size="tiny" :type="row.isFriendAirport ? 'success' : 'default'">
+                  {{ row.bucket.key.airport }}
+                </NTag>
+                <NTag v-if="row.cacheInfo?.fromCache" size="tiny" type="info">
+                  {{ formatCacheAge(row.cacheInfo.cacheAgeSeconds) }}
+                </NTag>
+              </div>
+            </div>
+            <div class="quote-card-body">
+              <div class="quote-tournament">{{ row.bucket.tournaments.map((t) => t.name).join(', ') }}</div>
+              <div class="quote-details">
+                <span>{{ row.bucket.tournaments[0]?.city }}, {{ row.bucket.tournaments[0]?.stateOrRegion }}</span>
+                <span>•</span>
+                <span>{{ new Date(row.bucket.key.weekendStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }}</span>
+              </div>
+              <div class="quote-flight">
+                <span>{{ row.quote.airline }}</span>
+                <span>•</span>
+                <span>Departs {{ row.quote.outboundDepartureTime }}</span>
+                <a 
+                  v-if="row.quote.googleFlightsUrl" 
+                  :href="row.quote.googleFlightsUrl" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  class="quote-link"
+                >
+                  <NIcon size="14"><OpenOutline /></NIcon>
+                </a>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Pagination -->
+          <div v-if="mobileTotalPages > 1" class="mobile-pagination">
+            <NButton 
+              size="small" 
+              :disabled="mobilePage <= 1"
+              @click="mobilePage--"
+            >
+              Previous
+            </NButton>
+            <NText depth="2" style="font-size: 13px;">
+              {{ mobilePage }} / {{ mobileTotalPages }}
+            </NText>
+            <NButton 
+              size="small" 
+              :disabled="mobilePage >= mobileTotalPages"
+              @click="mobilePage++"
+            >
+              Next
+            </NButton>
+          </div>
+        </div>
+
+        <NEmpty
+          v-else
+          description="No flight quotes found matching your filters"
+          style="padding: 48px 0"
+        />
+      </div>
 
     </NLayoutContent>
   </NLayout>
@@ -948,6 +1086,109 @@ onMounted(() => {
 
 .filters-card {
   margin-bottom: 16px;
+}
+
+/* Desktop table, hidden on mobile */
+.desktop-table {
+  min-height: 400px;
+}
+
+/* Mobile cards, hidden on desktop */
+.mobile-cards {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .desktop-table {
+    display: none;
+  }
+  
+  .mobile-cards {
+    display: block;
+  }
+}
+
+.quote-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quote-card {
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.quote-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.quote-price {
+  font-size: 20px;
+  font-weight: 700;
+  color: #18a058;
+}
+
+.quote-meta {
+  display: flex;
+  gap: 6px;
+}
+
+.quote-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quote-tournament {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.quote-details {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dark-mode .quote-details {
+  color: #aaa;
+}
+
+.quote-flight {
+  font-size: 12px;
+  color: #888;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dark-mode .quote-flight {
+  color: #999;
+}
+
+.quote-link {
+  color: #18a058;
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.mobile-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0;
+  margin-top: 8px;
 }
 
 .results-card {
