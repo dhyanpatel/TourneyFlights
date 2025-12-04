@@ -155,6 +155,9 @@ const columns: DataTableColumns<FlatQuoteRow> = [
   {
     title: 'Tournaments',
     key: 'tournaments',
+    ellipsis: {
+      tooltip: true,
+    },
     render(row) {
       return row.bucket.tournaments.map((t) => t.name).join(', ');
     },
@@ -702,14 +705,15 @@ onMounted(() => {
                 <FilterOutline />
               </NIcon>
             </template>
-            <NGrid :cols="24" :x-gap="16" :y-gap="16">
-              <NGi span="24 m:8 l:6">
+            <NGrid :cols="24" :x-gap="12" :y-gap="12">
+              <NGi span="24 m:12 l:6">
                 <NSpace vertical size="small">
-                  <NText depth="3">Search Tournaments</NText>
+                  <NText depth="3" style="font-size: 11px;">Search Tournaments</NText>
                   <NInput
                     v-model:value="filters.search"
                     placeholder="Search by name..."
                     clearable
+                    size="small"
                   >
                     <template #prefix>
                       <NIcon>
@@ -719,65 +723,71 @@ onMounted(() => {
                   </NInput>
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:3">
+              <NGi span="12 m:6 l:3">
                 <NSpace vertical size="small">
-                  <NText depth="3">Airport</NText>
+                  <NText depth="3" style="font-size: 11px;">Airport</NText>
                   <NSelect
                     v-model:value="filters.airport"
                     :options="airportOptions"
                     placeholder="All"
                     clearable
                     filterable
+                    size="small"
                     :consistent-menu-width="false"
                     @clear="filters.airport = undefined"
                   />
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:3">
+              <NGi span="12 m:6 l:3">
                 <NSpace vertical size="small">
-                  <NText depth="3">State</NText>
+                  <NText depth="3" style="font-size: 11px;">State</NText>
                   <NSelect
                     v-model:value="filters.state"
                     :options="stateOptions"
                     placeholder="All"
                     clearable
                     filterable
+                    size="small"
                     :consistent-menu-width="false"
                     @clear="filters.state = undefined"
                   />
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:3">
+              <NGi span="12 m:6 l:3">
                 <NSpace vertical size="small">
-                  <NText depth="3">Max Price ($)</NText>
+                  <NText depth="3" style="font-size: 11px;">Max Price ($)</NText>
                   <NInputNumber
                     v-model:value="filters.maxPrice"
                     :min="0"
                     placeholder="No limit"
                     clearable
+                    size="small"
+                    style="width: 100%;"
                   />
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:3">
+              <NGi span="12 m:6 l:3">
                 <NSpace vertical size="small">
-                  <NText depth="3">Limit Results</NText>
+                  <NText depth="3" style="font-size: 11px;">Limit Results</NText>
                   <NInputNumber
                     v-model:value="filters.limit"
                     :min="1"
                     placeholder="No limit"
                     clearable
+                    size="small"
+                    style="width: 100%;"
                   />
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:2">
+              <NGi span="12 m:6 l:3">
                 <NSpace vertical size="small">
-                  <NText depth="3">Friends Only</NText>
-                  <NSwitch v-model:value="filters.friendsOnly" />
+                  <NText depth="3" style="font-size: 11px;">Friends Only</NText>
+                  <NSwitch v-model:value="filters.friendsOnly" size="small" />
                 </NSpace>
               </NGi>
               <NGi span="24 m:12 l:6">
                 <NSpace vertical size="small">
-                  <NText depth="3">Friend Airports</NText>
+                  <NText depth="3" style="font-size: 11px;">Friend Airports</NText>
                   <NSelect
                     v-model:value="editingConfig.friendAirports"
                     :options="airportOptions"
@@ -836,6 +846,7 @@ onMounted(() => {
           :loading="sessionStore.isLoadingQuotes"
           :pagination="{ pageSize: 50 }"
           :bordered="false"
+          :scroll-x="1000"
           striped
           size="small"
           :row-key="(row: FlatQuoteRow) => `${row.bucket.key.airport}-${row.bucket.key.weekendStart}-${row.quote.airline}-${row.quote.outboundDepartureTime}`"
@@ -927,6 +938,12 @@ onMounted(() => {
   padding: 24px;
   max-width: 1400px;
   margin: 0 auto;
+}
+
+@media (max-width: 640px) {
+  .content {
+    padding: 12px;
+  }
 }
 
 .filters-card {
