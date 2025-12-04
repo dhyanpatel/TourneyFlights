@@ -23,10 +23,8 @@ import {
   NCollapse,
   NCollapseItem,
   NDataTable,
-  NBadge,
   NPopover,
   NProgress,
-  NModal,
   NTooltip,
   NDatePicker,
 } from 'naive-ui';
@@ -36,8 +34,6 @@ import {
   AirplaneOutline,
   LogOutOutline,
   FilterOutline,
-  KeyOutline,
-  SettingsOutline,
   PlayOutline,
   TimeOutline,
   InformationCircleOutline,
@@ -46,6 +42,8 @@ import {
   OpenOutline,
 } from '@vicons/ionicons5';
 import { useSessionStore } from '@/stores/session';
+import { useThemeStore } from '@/stores/theme';
+import { MoonOutline, SunnyOutline } from '@vicons/ionicons5';
 import type { QuotesQueryParams, SearchFlightsRequest, SessionConfig, FlightQuote, WeekendBucket, CacheInfo } from '@/types/api';
 
 // Flattened row type for displaying individual quotes
@@ -61,6 +59,7 @@ const emit = defineEmits<{
 }>();
 
 const sessionStore = useSessionStore();
+const themeStore = useThemeStore();
 
 // Filter state
 const filters = ref<QuotesQueryParams>({
@@ -72,12 +71,10 @@ const filters = ref<QuotesQueryParams>({
   limit: undefined,
 });
 
-// Config editing state (inline, no modal)
+// Config editing state (always editable, no toggle)
 const editingConfig = ref<SessionConfig>({});
-const isEditingConfig = ref(false);
 
-// Flight search state
-const showSearchModal = ref(false);
+// Flight search state (inline in card, no modal)
 const searchRequest = ref<SearchFlightsRequest>({
   skipCache: false,
   maxResults: undefined,
@@ -96,6 +93,15 @@ const airportOptions = computed(() =>
 const stateOptions = computed(() =>
   sessionStore.states.map((s) => ({ label: s, value: s }))
 );
+
+// Total individual quotes from API (before frontend filtering)
+const totalQuotesFromApi = computed(() => {
+  let total = 0;
+  for (const wq of sessionStore.quotes) {
+    total += wq.quotes.length;
+  }
+  return total;
+});
 
 // Flatten quotes for table display - each row is one quote
 // Compute isFriendAirport dynamically based on current config (not cached value from API)
@@ -274,26 +280,6 @@ function clearFilters(): void {
   };
 }
 
-// Config editing (inline)
-function startEditingConfig(): void {
-  editingConfig.value = { ...sessionStore.config };
-  isEditingConfig.value = true;
-}
-
-function cancelEditingConfig(): void {
-  isEditingConfig.value = false;
-  editingConfig.value = {};
-}
-
-async function saveConfig(): Promise<void> {
-  const success = await sessionStore.updateConfig(editingConfig.value);
-  if (success) {
-    isEditingConfig.value = false;
-    // Refresh quotes after config change to apply new friend airports filter
-    await fetchQuotes();
-  }
-}
-
 // Format date for display
 function formatDate(dateStr: string | undefined): string {
   if (!dateStr) return 'N/A';
@@ -306,12 +292,6 @@ function getReturnDayName(tripDays: number): string {
   return days[tripDays % 7] || 'Unknown';
 }
 
-// Computed return day for display
-const returnDayName = computed(() => {
-  const days = sessionStore.config.tripDurationDays ?? 2;
-  return getReturnDayName(days);
-});
-
 // Computed return day for editing
 const editingReturnDayName = computed(() => {
   const days = editingConfig.value.tripDurationDays ?? 2;
@@ -319,18 +299,7 @@ const editingReturnDayName = computed(() => {
 });
 
 // Flight search
-function openSearchModal(): void {
-  searchRequest.value = {
-    skipCache: false,
-    maxResults: undefined,
-    destinationAirport: undefined,
-    departureDate: undefined,
-  };
-  showSearchModal.value = true;
-}
-
 function runFlightSearch(): void {
-  showSearchModal.value = false;
   sessionStore.searchFlightsStream(searchRequest.value, async () => {
     // Refresh quotes after search completes
     await fetchQuotes();
@@ -361,12 +330,14 @@ async function handleLogout(): Promise<void> {
 }
 
 onMounted(() => {
+  // Initialize editingConfig with current session config
+  editingConfig.value = { ...sessionStore.config };
   fetchQuotes();
 });
 </script>
 
 <template>
-  <NLayout class="flight-search-layout">
+  <NLayout :class="['flight-search-layout', { 'dark-mode': themeStore.isDark }]">
     <NLayoutHeader class="header" bordered>
       <div class="header-content">
         <div class="header-left">
@@ -376,26 +347,27 @@ onMounted(() => {
           <span class="app-title">TourneyFlights</span>
         </div>
         <div class="header-right">
-          <!-- Remaining Searches Counter -->
-          <NTag 
-            :type="sessionStore.totalRemainingSearches <= 10 ? 'warning' : 'success'" 
-            size="medium"
-            round
-          >
-            {{ sessionStore.totalRemainingSearches }} searches left
-          </NTag>
+          <!-- Dark Mode Toggle -->
+          <NButton quaternary circle @click="themeStore.toggleTheme">
+            <template #icon>
+              <NIcon>
+                <MoonOutline v-if="!themeStore.isDark" />
+                <SunnyOutline v-else />
+              </NIcon>
+            </template>
+          </NButton>
 
-          <!-- API Key Usage Popover -->
+          <!-- Remaining Searches Counter with API Key Usage Popover -->
           <NPopover trigger="hover" placement="bottom-end">
             <template #trigger>
-              <NButton quaternary>
-                <template #icon>
-                  <NIcon>
-                    <KeyOutline />
-                  </NIcon>
-                </template>
-                API Keys
-              </NButton>
+              <NTag 
+                :type="sessionStore.totalRemainingSearches <= 100 ? 'warning' : 'success'" 
+                size="medium"
+                round
+                style="cursor: pointer;"
+              >
+                {{ sessionStore.totalRemainingSearches }} searches left
+              </NTag>
             </template>
             <div class="api-usage-popover">
               <div class="api-usage-title">API Key Usage</div>
@@ -535,104 +507,6 @@ onMounted(() => {
     </NLayoutHeader>
 
     <NLayoutContent class="content">
-      <!-- Settings Section -->
-      <NCard class="settings-card" size="small">
-        <template #header>
-          <NSpace justify="space-between" align="center">
-            <NSpace align="center" size="small">
-              <NIcon size="18" color="#18a058">
-                <SettingsOutline />
-              </NIcon>
-              <NText strong>Settings</NText>
-            </NSpace>
-            <NSpace v-if="!isEditingConfig">
-              <NButton size="small" @click="startEditingConfig">Edit</NButton>
-            </NSpace>
-            <NSpace v-else>
-              <NButton size="small" @click="cancelEditingConfig">Cancel</NButton>
-              <NButton size="small" type="primary" :loading="sessionStore.isUpdatingConfig" @click="saveConfig">
-                Save
-              </NButton>
-            </NSpace>
-          </NSpace>
-        </template>
-
-        <!-- View Mode -->
-        <NGrid v-if="!isEditingConfig" :cols="24" :x-gap="16" :y-gap="12" responsive="screen" item-responsive>
-          <NGi span="12 m:6 l:3">
-            <div class="config-display">
-              <NText depth="3" style="font-size: 12px;">Origin Airport</NText>
-              <NTag size="small" type="info">{{ sessionStore.config.originAirport || 'Not set' }}</NTag>
-            </div>
-          </NGi>
-          <NGi span="12 m:6 l:3">
-            <div class="config-display">
-              <NText depth="3" style="font-size: 12px;">Months to Search</NText>
-              <NText>{{ sessionStore.config.filterMonths ?? 3 }}</NText>
-            </div>
-          </NGi>
-          <NGi span="12 m:6 l:3">
-            <div class="config-display">
-              <NText depth="3" style="font-size: 12px;">Trip (Fri → {{ returnDayName }})</NText>
-              <NText>{{ sessionStore.config.tripDurationDays ?? 2 }} days</NText>
-            </div>
-          </NGi>
-          <NGi span="24 m:12 l:6">
-            <div class="config-display">
-              <NText depth="3" style="font-size: 12px;">Friend Airports</NText>
-              <NSpace size="small">
-                <NTag
-                  v-for="airport in sessionStore.config.friendAirports"
-                  :key="airport"
-                  size="small"
-                  type="success"
-                >
-                  {{ airport }}
-                </NTag>
-                <NText v-if="!sessionStore.config.friendAirports?.length" depth="3">None</NText>
-              </NSpace>
-            </div>
-          </NGi>
-        </NGrid>
-
-        <!-- Edit Mode -->
-        <NGrid v-else :cols="24" :x-gap="12" :y-gap="12">
-          <NGi span="12 m:6 l:4">
-            <NSpace vertical size="small">
-              <NText depth="3" style="font-size: 12px;">Origin Airport</NText>
-              <NInput v-model:value="editingConfig.originAirport" placeholder="e.g., ORD" size="small" />
-            </NSpace>
-          </NGi>
-          <NGi span="12 m:6 l:3">
-            <NSpace vertical size="small">
-              <NText depth="3" style="font-size: 12px;">Months</NText>
-              <NInputNumber v-model:value="editingConfig.filterMonths" :min="1" :max="12" size="small" />
-            </NSpace>
-          </NGi>
-          <NGi span="12 m:6 l:5">
-            <NSpace vertical size="small">
-              <NText depth="3" style="font-size: 12px;">Trip Days (Fri → {{ editingReturnDayName }})</NText>
-              <NInputNumber v-model:value="editingConfig.tripDurationDays" :min="1" :max="14" size="small" />
-            </NSpace>
-          </NGi>
-          <NGi span="24 m:12 l:6">
-            <NSpace vertical size="small">
-              <NText depth="3" style="font-size: 12px;">Friend Airports</NText>
-              <NSelect
-                v-model:value="editingConfig.friendAirports"
-                :options="airportOptions"
-                placeholder="Select airports..."
-                multiple
-                filterable
-                clearable
-                size="small"
-                :consistent-menu-width="false"
-              />
-            </NSpace>
-          </NGi>
-        </NGrid>
-      </NCard>
-
       <!-- Flight Search Card -->
       <NCard class="search-card" size="small">
         <NSpace vertical size="medium">
@@ -642,15 +516,12 @@ onMounted(() => {
                 <PlayOutline />
               </NIcon>
               <NText strong>Flight Search</NText>
-              <NText v-if="!sessionStore.isSearching" depth="3" style="font-size: 12px;">
-                Search for flight quotes using SerpAPI
-              </NText>
             </NSpace>
             <NSpace>
               <NButton
                 v-if="!sessionStore.isSearching"
                 type="primary"
-                @click="openSearchModal"
+                @click="runFlightSearch"
               >
                 <template #icon>
                   <NIcon>
@@ -660,7 +531,7 @@ onMounted(() => {
                 Search Flights
               </NButton>
               <NButton
-                v-else
+                v-if="sessionStore.isSearching"
                 type="error"
                 @click="cancelSearch"
               >
@@ -673,6 +544,88 @@ onMounted(() => {
               </NButton>
             </NSpace>
           </NSpace>
+
+          <!-- Search Settings -->
+          <div class="search-settings">
+            <NGrid :cols="24" :x-gap="12" :y-gap="12">
+              <!-- Config fields -->
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Origin Airport</NText>
+                  <NInput v-model:value="editingConfig.originAirport" placeholder="e.g., ORD" size="small" />
+                </NSpace>
+              </NGi>
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Months Ahead</NText>
+                  <NInputNumber v-model:value="editingConfig.filterMonths" :min="1" :max="12" size="small" style="width: 100%;" />
+                </NSpace>
+              </NGi>
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Trip Days (Fri → {{ editingReturnDayName }})</NText>
+                  <NInputNumber v-model:value="editingConfig.tripDurationDays" :min="1" :max="14" size="small" style="width: 100%;" />
+                </NSpace>
+              </NGi>
+              <!-- Search request fields -->
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Destination (optional)</NText>
+                  <NSelect
+                    v-model:value="searchRequest.destinationAirport"
+                    :options="airportOptions"
+                    placeholder="All"
+                    clearable
+                    size="small"
+                    :consistent-menu-width="false"
+                  />
+                </NSpace>
+              </NGi>
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Departure Date (optional)</NText>
+                  <NDatePicker
+                    v-model:formatted-value="searchRequest.departureDate"
+                    type="date"
+                    value-format="yyyy-MM-dd"
+                    clearable
+                    placeholder="Any"
+                    size="small"
+                    style="width: 100%"
+                  />
+                </NSpace>
+              </NGi>
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Max Results</NText>
+                  <NInputNumber
+                    v-model:value="searchRequest.maxResults"
+                    :min="1"
+                    placeholder="No limit"
+                    clearable
+                    size="small"
+                    style="width: 100%;"
+                  />
+                </NSpace>
+              </NGi>
+              <NGi span="12 m:6 l:3">
+                <NSpace vertical size="small">
+                  <NText depth="3" style="font-size: 11px;">Skip Cache</NText>
+                  <NSpace align="center">
+                    <NSwitch v-model:value="searchRequest.skipCache" size="small" />
+                    <NTooltip>
+                      <template #trigger>
+                        <NIcon size="14" depth="3">
+                          <TimeOutline />
+                        </NIcon>
+                      </template>
+                      Force fresh data from API (ignore 24h cache)
+                    </NTooltip>
+                  </NSpace>
+                </NSpace>
+              </NGi>
+            </NGrid>
+          </div>
 
           <!-- Progress Display -->
           <div v-if="sessionStore.isSearching" class="search-progress">
@@ -816,18 +769,36 @@ onMounted(() => {
                   />
                 </NSpace>
               </NGi>
-              <NGi span="12 m:4 l:3">
+              <NGi span="12 m:4 l:2">
                 <NSpace vertical size="small">
                   <NText depth="3">Friends Only</NText>
                   <NSwitch v-model:value="filters.friendsOnly" />
                 </NSpace>
               </NGi>
+              <NGi span="24 m:12 l:6">
+                <NSpace vertical size="small">
+                  <NText depth="3">Friend Airports</NText>
+                  <NSelect
+                    v-model:value="editingConfig.friendAirports"
+                    :options="airportOptions"
+                    placeholder="Select friend airports..."
+                    multiple
+                    filterable
+                    clearable
+                    size="small"
+                    :consistent-menu-width="false"
+                  />
+                </NSpace>
+              </NGi>
             </NGrid>
             <NDivider style="margin: 16px 0 8px 0" />
             <NSpace justify="space-between" align="center">
-              <NBadge :value="sessionStore.quotesCount" :max="999" show-zero>
-                <NText>Results</NText>
-              </NBadge>
+              <NSpace align="center" size="small">
+                <NText>Showing</NText>
+                <NTag size="small" round type="info">
+                  {{ flattenedQuotes.length }} shown<template v-if="totalQuotesFromApi > flattenedQuotes.length">, {{ totalQuotesFromApi - flattenedQuotes.length }} hidden</template>
+                </NTag>
+              </NSpace>
               <NButton size="small" @click="clearFilters">Clear Filters</NButton>
             </NSpace>
           </NCollapseItem>
@@ -877,99 +848,50 @@ onMounted(() => {
         />
       </NCard>
 
-      <!-- Flight Search Modal -->
-      <NModal
-        v-model:show="showSearchModal"
-        preset="card"
-        title="Search Flights"
-        style="width: 500px; max-width: 90vw;"
-      >
-        <NSpace vertical size="large">
-          <NAlert type="info" :bordered="false">
-            Search for flight quotes. Leave fields empty to search all filtered buckets.
-          </NAlert>
-          <NGrid :cols="24" :x-gap="12" :y-gap="16">
-            <NGi span="24 m:12">
-              <NSpace vertical size="small">
-                <NText depth="3">Destination Airport (optional)</NText>
-                <NSelect
-                  v-model:value="searchRequest.destinationAirport"
-                  :options="airportOptions"
-                  placeholder="All destinations"
-                  clearable
-                />
-              </NSpace>
-            </NGi>
-            <NGi span="24 m:12">
-              <NSpace vertical size="small">
-                <NText depth="3">Departure Date (optional)</NText>
-                <NDatePicker
-                  v-model:formatted-value="searchRequest.departureDate"
-                  type="date"
-                  value-format="yyyy-MM-dd"
-                  clearable
-                  placeholder="Any date"
-                  style="width: 100%"
-                />
-              </NSpace>
-            </NGi>
-            <NGi span="24 m:12">
-              <NSpace vertical size="small">
-                <NText depth="3">Max Results</NText>
-                <NInputNumber
-                  v-model:value="searchRequest.maxResults"
-                  :min="1"
-                  placeholder="No limit"
-                  clearable
-                />
-              </NSpace>
-            </NGi>
-            <NGi span="24 m:12">
-              <NSpace vertical size="small">
-                <NText depth="3">Skip Cache</NText>
-                <NSpace align="center">
-                  <NSwitch v-model:value="searchRequest.skipCache" />
-                  <NTooltip>
-                    <template #trigger>
-                      <NIcon size="16" depth="3">
-                        <TimeOutline />
-                      </NIcon>
-                    </template>
-                    Force fresh data from API (ignore 24h cache)
-                  </NTooltip>
-                </NSpace>
-              </NSpace>
-            </NGi>
-          </NGrid>
-          <NSpace justify="end">
-            <NButton @click="showSearchModal = false">Cancel</NButton>
-            <NButton
-              type="primary"
-              :loading="sessionStore.isSearching"
-              @click="runFlightSearch"
-            >
-              <template #icon>
-                <NIcon>
-                  <SearchOutline />
-                </NIcon>
-              </template>
-              Search
-            </NButton>
-          </NSpace>
-        </NSpace>
-      </NModal>
     </NLayoutContent>
   </NLayout>
 </template>
 
 <style scoped>
+/* Light mode defaults */
 .flight-search-layout {
+  --bg-color: #f5f7fa;
+  --header-bg: #fff;
+  --card-bg: #f9f9f9;
+  --border-color: #e8e8e8;
+  --text-color: #333;
+  
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--bg-color);
+  transition: background-color 0.3s, color 0.3s;
+}
+
+/* Dark mode overrides */
+.flight-search-layout.dark-mode {
+  --bg-color: #18181c;
+  --header-bg: #1e1e22;
+  --card-bg: #2a2a2e;
+  --border-color: #3a3a3e;
+  --text-color: #fff;
+}
+
+:deep(.n-layout) {
+  background: var(--bg-color) !important;
+}
+
+:deep(.n-layout-header) {
+  background: var(--header-bg) !important;
+}
+
+:deep(.n-layout-content) {
+  background: transparent;
+}
+
+:deep(.n-layout-sider) {
+  background: var(--header-bg) !important;
 }
 
 .header {
-  background: #fff;
   padding: 0 24px;
   height: 64px;
   display: flex;
@@ -992,7 +914,7 @@ onMounted(() => {
 .app-title {
   font-size: 20px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-color);
 }
 
 .header-right {
@@ -1005,14 +927,6 @@ onMounted(() => {
   padding: 24px;
   max-width: 1400px;
   margin: 0 auto;
-}
-
-.summary-card {
-  margin-bottom: 16px;
-}
-
-.settings-card {
-  margin-bottom: 16px;
 }
 
 .filters-card {
@@ -1043,12 +957,12 @@ onMounted(() => {
   font-size: 14px;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .api-key-item {
   padding: 12px;
-  background: #f9f9f9;
+  background: var(--card-bg);
   border-radius: 6px;
   margin-bottom: 8px;
 }
@@ -1066,7 +980,7 @@ onMounted(() => {
 
 .masked-key {
   font-size: 12px;
-  background: #e8e8e8;
+  background: var(--card-bg);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -1094,7 +1008,7 @@ onMounted(() => {
   font-size: 14px;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .session-info-content {
@@ -1103,14 +1017,14 @@ onMounted(() => {
 
 .session-id {
   font-size: 11px;
-  background: #e8e8e8;
+  background: var(--card-bg);
   padding: 2px 6px;
   border-radius: 4px;
 }
 
 .search-progress {
   padding: 12px;
-  background: #f9f9f9;
+  background: var(--card-bg);
   border-radius: 6px;
 }
 
@@ -1120,8 +1034,14 @@ onMounted(() => {
 
 .last-search-summary {
   padding: 8px 12px;
-  background: #f0fdf4;
+  background: rgba(24, 160, 88, 0.1);
   border-radius: 6px;
   font-size: 13px;
+}
+
+.search-settings {
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border-radius: 6px;
 }
 </style>
