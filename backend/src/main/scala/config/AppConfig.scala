@@ -58,9 +58,8 @@ object AppConfig {
       env.get(key).map(_.trim).filter(_.nonEmpty)
 
     val apiKeys = get("SERPAPI_KEYS")
-      .orElse(get("SERPAPI_KEY").map(k => k))
       .map(_.split(",").toList.map(_.trim).filter(_.nonEmpty))
-      .getOrElse(List("KEYHERE"))
+      .getOrElse(Nil)
 
     val originAirport = get("ORIGIN_AIRPORT").getOrElse("ORD")
 

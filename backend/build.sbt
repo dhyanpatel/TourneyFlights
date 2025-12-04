@@ -21,6 +21,11 @@ libraryDependencies ++= Seq(
   "io.circe" %% "circe-generic" % "0.14.15",
   "io.circe" %% "circe-parser" % "0.14.15",
 
+  // http4s for API server
+  "org.http4s" %% "http4s-ember-server" % "0.23.30",
+  "org.http4s" %% "http4s-circe" % "0.23.30",
+  "org.http4s" %% "http4s-dsl" % "0.23.30",
+
   // Jsoup for scraping
   "org.jsoup" % "jsoup" % "1.21.2",
 
