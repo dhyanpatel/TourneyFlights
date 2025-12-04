@@ -1,6 +1,5 @@
 package services
 
-import config.AppConfig
 import java.time.{DayOfWeek, LocalDate}
 import java.time.temporal.TemporalAdjusters
 import models._

@@ -245,8 +245,8 @@ object ApiRoutes {
     for {
       response    <- basicRequest.get(omnipongUrl).send(backend)
       body        <- IO.fromEither(response.body.left.map(new Exception(_)))
-      tournaments  = TournamentScraper.parseTournaments(body)
-      allBuckets   = TournamentService.toWeekendBuckets(tournaments)
+      tournaments <- IO.blocking(TournamentScraper.parseTournaments(body))
+      allBuckets  <- IO.blocking(TournamentService.toWeekendBuckets(tournaments))
     } yield (tournaments, allBuckets)
   }
 

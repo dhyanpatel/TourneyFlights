@@ -1,9 +1,13 @@
 package services
 
-import config.DepartureWindow
 import java.time.{LocalDateTime, LocalTime}
 import java.time.format.DateTimeFormatter
 import models._
+
+final case class DepartureWindow(
+    earliest: Option[LocalTime],
+    latest: Option[LocalTime]
+)
 
 object FlightFilterService {
 

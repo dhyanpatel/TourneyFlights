@@ -40,7 +40,7 @@ final class FlightsClient(
   ): String = s"${origin}_${dest}_${depart}_${ret}.json"
 
   private def getCacheAge(path: Path): IO[Option[(Long, Instant)]] =
-    IO {
+    IO.blocking {
       if (Files.exists(path)) {
         val attrs = Files.readAttributes(path, classOf[BasicFileAttributes])
         val modifiedTime = attrs.lastModifiedTime().toInstant
@@ -51,7 +51,7 @@ final class FlightsClient(
 
   private def loadCachedJson(path: Path, skipCache: Boolean): IO[Option[(Json, CacheInfo)]] =
     if (skipCache) IO.pure(None)
-    else IO {
+    else IO.blocking {
       if (Files.exists(path)) {
         val attrs = Files.readAttributes(path, classOf[BasicFileAttributes])
         val modifiedTime = attrs.lastModifiedTime().toInstant
@@ -70,7 +70,7 @@ final class FlightsClient(
     }
 
   private def saveCachedJson(path: Path, json: Json): IO[Unit] =
-    IO {
+    IO.blocking {
       Files.createDirectories(path.getParent)
       Files.write(path, json.noSpaces.getBytes(StandardCharsets.UTF_8))
       ()
