@@ -1,6 +1,6 @@
 package models
 
-import java.time.LocalDate
+import java.time.{Instant, LocalDate}
 
 final case class WeekendKey(
     airport: MetroAirport,
@@ -20,11 +20,20 @@ final case class FlightQuote(
     priceUsd: BigDecimal,
     outboundDepartureTime: String,
     outboundArrivalTime: String,
-    airline: String
+    airline: String,
+    googleFlightsUrl: Option[String]
+)
+
+final case class QuoteCacheInfo(
+    fromCache: Boolean,
+    cacheAgeSeconds: Option[Long],
+    cachedAt: Option[Instant]
 )
 
 final case class WeekendQuote(
     bucket: WeekendBucket,
-    quote: Option[FlightQuote],
-    isFriendAirport: Boolean
-)
+    quotes: List[FlightQuote],
+    cacheInfo: QuoteCacheInfo
+) {
+  def cheapestQuote: Option[FlightQuote] = quotes.sortBy(_.priceUsd).headOption
+}

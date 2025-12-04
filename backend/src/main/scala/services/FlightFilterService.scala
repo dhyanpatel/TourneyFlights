@@ -1,6 +1,6 @@
 package services
 
-import config.{AppConfig, DepartureWindow}
+import config.DepartureWindow
 import java.time.{LocalDateTime, LocalTime}
 import java.time.format.DateTimeFormatter
 import models._
@@ -29,39 +29,13 @@ object FlightFilterService {
       }
   }
 
-  /** Pure: check if a quote meets price criteria */
-  def meetsPriceCriteria(
-      quote: FlightQuote,
-      isFriendAirport: Boolean,
-      maxPriceBase: Int,
-      maxPriceFriend: Int
-  ): Boolean =
-    quote.priceUsd <= maxPriceBase ||
-      (isFriendAirport && quote.priceUsd <= maxPriceFriend)
-
-  /** Pure: filter weekend quotes by price and outbound departure window */
-  def filterQuotes(quotes: List[WeekendQuote], config: AppConfig): List[WeekendQuote] =
-    quotes.collect {
-      case wq @ WeekendQuote(_, Some(q), isFriend)
-          if meetsPriceCriteria(q, isFriend, config.maxPriceBase, config.maxPriceFriend) &&
-            withinWindow(q.outboundDepartureTime, config.outboundWindow) =>
-        wq
-    }
-
-  /** Pure: filter by maximum price */
+  /** Pure: filter by maximum price (uses cheapest quote) */
   def filterByMaxPrice(quotes: List[WeekendQuote], maxPrice: Int): List[WeekendQuote] =
-    quotes.filter {
-      case WeekendQuote(_, Some(q), _) => q.priceUsd <= maxPrice
-      case _                           => false
-    }
+    quotes.filter(_.cheapestQuote.exists(_.priceUsd <= maxPrice))
 
   /** Pure: filter by airport code */
   def filterByAirport(quotes: List[WeekendQuote], airportCode: String): List[WeekendQuote] =
     quotes.filter(_.bucket.key.airport.code.equalsIgnoreCase(airportCode))
-
-  /** Pure: filter by friend airports only */
-  def filterFriendAirportsOnly(quotes: List[WeekendQuote]): List[WeekendQuote] =
-    quotes.filter(_.isFriendAirport)
 
   /** Pure: filter by state/region */
   def filterByState(quotes: List[WeekendQuote], state: String): List[WeekendQuote] =
@@ -77,12 +51,9 @@ object FlightFilterService {
     }
   }
 
-  /** Pure: sort quotes by price ascending */
+  /** Pure: sort quotes by price ascending (uses cheapest quote) */
   def sortByPrice(quotes: List[WeekendQuote]): List[WeekendQuote] =
-    quotes.sortBy {
-      case WeekendQuote(_, Some(q), _) => q.priceUsd
-      case _                           => BigDecimal(Int.MaxValue)
-    }
+    quotes.sortBy(_.cheapestQuote.map(_.priceUsd).getOrElse(BigDecimal(Int.MaxValue)))
 
   /** Pure: sort quotes by date ascending */
   def sortByDate(quotes: List[WeekendQuote]): List[WeekendQuote] =

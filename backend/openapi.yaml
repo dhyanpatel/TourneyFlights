@@ -1,0 +1,803 @@
+openapi: 3.0.3
+info:
+  title: TourneyFlights API
+  description: |
+    API for finding flight quotes to table tennis tournaments.
+    
+    ## Authentication
+    This API uses session-based authentication:
+    1. Call `POST /api/session` with your SerpAPI keys and optional config
+    2. Include the returned `sessionId` in the `X-Session-Id` header for all subsequent requests
+    3. Sessions expire after 1 hour
+    
+    ## Workflow
+    1. Create a session with `POST /api/session`
+    2. Optionally update config with `PATCH /api/session/config`
+    3. Search for flights with `POST /api/flights/search`
+    4. View cached quotes with `GET /api/flights/quotes`
+    
+    ## Caching
+    - Flight data is cached for 24 hours
+    - Use `skipCache: true` in search requests to force fresh data
+    - All quote responses include cache metadata (fromCache, cacheAgeSeconds, cachedAt)
+  version: 2.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoint
+  - name: Session
+    description: Session management and configuration
+  - name: Flights
+    description: Flight search and quotes
+  - name: Data
+    description: Tournament and airport data
+  - name: Keys
+    description: API key management
+
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns API health status. No authentication required.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/session:
+    post:
+      tags: [Session]
+      summary: Create a new session
+      description: |
+        Creates a new session by loading tournament data from omnipong.com.
+        Provide your SerpAPI keys and optional configuration.
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '200':
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          description: Bad request (empty apiKeys list)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Failed to load tournament data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags: [Session]
+      summary: Get current session info
+      description: Returns details about the current session including config and statistics.
+      operationId: getSession
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: Session info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfoResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Session]
+      summary: End session
+      description: Terminates the current session.
+      operationId: deleteSession
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Session ended"
+        '400':
+          description: Missing X-Session-Id header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/session/config:
+    patch:
+      tags: [Session]
+      summary: Update session configuration
+      description: |
+        Update session settings like origin airport, friend airports, price limits, etc.
+        Only provided fields are updated; others remain unchanged.
+      operationId: updateSessionConfig
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConfigRequest'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  config:
+                    $ref: '#/components/schemas/SessionConfig'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/flights/search:
+    post:
+      tags: [Flights]
+      summary: Search for flights
+      description: |
+        Search for flight quotes. Results are cached in the session.
+        
+        You can search by:
+        - Specific destination and date
+        - Specific destination (all dates from filtered buckets)
+        - Specific date (all destinations)
+        - All filtered buckets (no parameters)
+        
+        Use `skipCache: true` to force fresh data from the API.
+      operationId: searchFlights
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchFlightsRequest'
+      responses:
+        '200':
+          description: Flight search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchFlightsResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/flights/search/stream:
+    post:
+      tags: [Flights]
+      summary: Search for flights with real-time progress (SSE)
+      description: |
+        Search for flight quotes with Server-Sent Events for real-time progress updates.
+        
+        Returns a stream of events:
+        - `progress` - Sent after each flight is fetched (current/total, destination, price)
+        - `complete` - Sent when all flights are fetched (contains full results)
+        - `error` - Sent if an error occurs
+        
+        **Frontend usage:**
+        ```javascript
+        const eventSource = new EventSource('/api/flights/search/stream', {
+          method: 'POST',
+          headers: { 'X-Session-Id': sessionId },
+          body: JSON.stringify({ maxResults: 10 })
+        });
+        
+        eventSource.addEventListener('progress', (e) => {
+          const { current, total, destination, priceUsd } = JSON.parse(e.data);
+          updateProgressBar(current / total);
+        });
+        
+        eventSource.addEventListener('complete', (e) => {
+          const { results, totalQuotes } = JSON.parse(e.data);
+          displayResults(results);
+          eventSource.close();
+        });
+        ```
+      operationId: searchFlightsStream
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchFlightsRequest'
+      responses:
+        '200':
+          description: SSE stream of progress and results
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Stream of SSE events. Each event has format:
+                  ```
+                  event: <type>
+                  data: <json>
+                  ```
+              examples:
+                progress:
+                  value: |
+                    event: progress
+                    data: {"current":1,"total":10,"destination":"LAX","departureDate":"2024-03-15","fromCache":false,"priceUsd":189}
+                complete:
+                  value: |
+                    event: complete
+                    data: {"results":[...],"totalQuotes":45}
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/flights/quotes:
+    get:
+      tags: [Flights]
+      summary: Get cached flight quotes
+      description: |
+        Returns flight quotes that have been cached in the session from previous searches.
+        Supports filtering by airport, state, price, tournament name, and friend airports.
+      operationId: getFlightQuotes
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+        - name: airport
+          in: query
+          description: Filter by destination airport code
+          schema:
+            type: string
+          example: LAX
+        - name: state
+          in: query
+          description: Filter by state/region
+          schema:
+            type: string
+          example: CA
+        - name: maxPrice
+          in: query
+          description: Filter by maximum price in USD
+          schema:
+            type: integer
+          example: 200
+        - name: search
+          in: query
+          description: Search tournament names (case-insensitive)
+          schema:
+            type: string
+          example: open
+        - name: limit
+          in: query
+          description: Limit number of results
+          schema:
+            type: integer
+          example: 10
+      responses:
+        '200':
+          description: List of flight quotes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotesResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/airports:
+    get:
+      tags: [Data]
+      summary: List destination airports
+      description: Returns all unique destination airport codes from tournament data.
+      operationId: getAirports
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: List of airport codes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AirportsResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/states:
+    get:
+      tags: [Data]
+      summary: List states/regions
+      description: Returns all unique states or regions where tournaments are held.
+      operationId: getStates
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: List of states/regions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatesResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tournaments:
+    get:
+      tags: [Data]
+      summary: List tournament names
+      description: Returns all unique tournament names.
+      operationId: getTournaments
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: List of tournament names
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentsResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/buckets:
+    get:
+      tags: [Data]
+      summary: List weekend buckets
+      description: |
+        Returns weekend buckets (grouped tournaments by airport and date).
+        Filtered by the session's filterMonths config.
+      operationId: getBuckets
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: List of weekend buckets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketsResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/keys/usage:
+    get:
+      tags: [Keys]
+      summary: Get API key usage statistics
+      description: Returns usage statistics for all API keys in the session.
+      operationId: getApiKeyUsage
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      responses:
+        '200':
+          description: API key usage statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyUsageResponse'
+        '401':
+          description: Missing or invalid session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  parameters:
+    SessionIdHeader:
+      name: X-Session-Id
+      in: header
+      description: Session ID returned from POST /api/session
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    SessionConfig:
+      type: object
+      description: User-configurable session settings
+      properties:
+        originAirport:
+          type: string
+          description: Origin airport code for flight searches
+          example: ORD
+        friendAirports:
+          type: array
+          description: Airport codes where you have friends (higher price tolerance)
+          items:
+            type: string
+          example: [BOS, LAX]
+        filterMonths:
+          type: integer
+          description: Number of months ahead to search for tournaments (affects which API calls are made)
+          example: 3
+        tripDurationDays:
+          type: integer
+          description: Number of days for the trip (departure to return)
+          example: 2
+
+    CreateSessionRequest:
+      type: object
+      required:
+        - apiKeys
+      properties:
+        apiKeys:
+          type: array
+          description: List of SerpAPI keys
+          items:
+            type: string
+          minItems: 1
+        config:
+          $ref: '#/components/schemas/SessionConfig'
+      example:
+        apiKeys: ["your-serpapi-key"]
+        config:
+          originAirport: "SFO"
+          friendAirports: ["BOS", "LAX"]
+          filterMonths: 3
+          tripDurationDays: 2
+
+    SessionResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        config:
+          $ref: '#/components/schemas/SessionConfig'
+        totalTournaments:
+          type: integer
+        totalBuckets:
+          type: integer
+        message:
+          type: string
+
+    SessionInfoResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        config:
+          $ref: '#/components/schemas/SessionConfig'
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        totalTournaments:
+          type: integer
+        totalBuckets:
+          type: integer
+        quotesLoaded:
+          type: integer
+          description: Number of flight quotes cached in session
+        apiKeyCount:
+          type: integer
+
+    UpdateConfigRequest:
+      type: object
+      description: Partial update - only provided fields are changed
+      properties:
+        originAirport:
+          type: string
+        friendAirports:
+          type: array
+          items:
+            type: string
+        filterMonths:
+          type: integer
+        maxPriceBase:
+          type: integer
+        maxPriceFriend:
+          type: integer
+        tripDurationDays:
+          type: integer
+
+    SearchFlightsRequest:
+      type: object
+      description: All fields optional. Omit all for searching all filtered buckets.
+      properties:
+        originAirport:
+          type: string
+          description: Override session's origin airport for this search
+        destinationAirport:
+          type: string
+          description: Specific destination airport code
+        departureDate:
+          type: string
+          format: date
+          description: Specific departure date
+        returnDate:
+          type: string
+          format: date
+          description: Return date (defaults to departureDate + tripDurationDays)
+        maxResults:
+          type: integer
+          description: Limit number of searches
+        skipCache:
+          type: boolean
+          description: Force fresh data from API (ignore cache)
+          default: false
+
+    SearchFlightsResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlightSearchResult'
+        totalQuotes:
+          type: integer
+
+    FlightSearchResult:
+      type: object
+      properties:
+        origin:
+          type: string
+        destination:
+          type: string
+        departureDate:
+          type: string
+          format: date
+        returnDate:
+          type: string
+          format: date
+        quotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlightQuote'
+        cacheInfo:
+          $ref: '#/components/schemas/CacheInfo'
+
+    QuotesResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        quotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeekendQuote'
+
+    WeekendQuote:
+      type: object
+      description: A weekend/airport bucket with all available flight quotes
+      properties:
+        bucket:
+          $ref: '#/components/schemas/WeekendBucket'
+        quotes:
+          type: array
+          description: All available flight quotes for this route (not just cheapest)
+          items:
+            $ref: '#/components/schemas/FlightQuote'
+        cacheInfo:
+          $ref: '#/components/schemas/CacheInfo'
+
+    WeekendBucket:
+      type: object
+      properties:
+        key:
+          $ref: '#/components/schemas/WeekendKey'
+        tournaments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tournament'
+
+    WeekendKey:
+      type: object
+      properties:
+        airport:
+          type: string
+        weekendStart:
+          type: string
+          format: date
+
+    Tournament:
+      type: object
+      properties:
+        name:
+          type: string
+        city:
+          type: string
+        stateOrRegion:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        rawDateText:
+          type: string
+
+    FlightQuote:
+      type: object
+      properties:
+        origin:
+          type: string
+        destination:
+          type: string
+        departureDate:
+          type: string
+          format: date
+        returnDate:
+          type: string
+          format: date
+        priceUsd:
+          type: number
+        outboundDepartureTime:
+          type: string
+        outboundArrivalTime:
+          type: string
+        airline:
+          type: string
+        googleFlightsUrl:
+          type: string
+          nullable: true
+          description: Direct link to view this flight on Google Flights
+
+    CacheInfo:
+      type: object
+      description: Information about whether data came from cache
+      properties:
+        fromCache:
+          type: boolean
+          description: True if data was served from cache
+        cacheAgeSeconds:
+          type: integer
+          nullable: true
+          description: Age of cached data in seconds
+        cachedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the data was cached
+
+    BucketsResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeekendBucket'
+
+    AirportsResponse:
+      type: object
+      properties:
+        airports:
+          type: array
+          items:
+            type: string
+
+    StatesResponse:
+      type: object
+      properties:
+        states:
+          type: array
+          items:
+            type: string
+
+    TournamentsResponse:
+      type: object
+      properties:
+        tournaments:
+          type: array
+          items:
+            type: string
+
+    ApiKeyUsageResponse:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyUsage'
+
+    ApiKeyUsage:
+      type: object
+      properties:
+        maskedKey:
+          type: string
+          description: Masked API key (first 4 and last 4 chars visible)
+        accountEmail:
+          type: string
+          nullable: true
+        planName:
+          type: string
+          nullable: true
+        searchesPerMonth:
+          type: integer
+          nullable: true
+        thisMonthUsage:
+          type: integer
+          nullable: true
+        planSearchesLeft:
+          type: integer
+          nullable: true
+        extraCredits:
+          type: integer
+          nullable: true
+        totalSearchesLeft:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        activeSessions:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
