@@ -2,7 +2,7 @@ package api
 
 import cats.effect.IO
 import cats.effect.kernel.Ref
-import cats.syntax.traverse._
+import cats.syntax.parallel._
 import flights.{AccountClient, ApiKeyManager, CacheInfo, FlightsClient}
 import fs2.Stream
 import io.circe._
@@ -263,7 +263,7 @@ object ApiRoutes {
       flightsClient  = new FlightsClient(backend, keyManager, cacheDir, CACHE_TTL_SECONDS)
       limitedBuckets = maxResults.fold(buckets)(n => buckets.take(n))
 
-      weekendQuotes <- limitedBuckets.traverse { bucket =>
+      weekendQuotes <- limitedBuckets.parTraverse { bucket =>
         val depart = bucket.key.weekendStart
         val ret    = depart.plusDays(config.tripDurationDays)
         flightsClient
@@ -446,7 +446,7 @@ object ApiRoutes {
               keyManager    <- ApiKeyManager.create(data.apiKeys)
               flightsClient  = new FlightsClient(backend, keyManager, cacheDir, CACHE_TTL_SECONDS)
 
-              results <- limitedBuckets.traverse { case (dest, depDate, retDate) =>
+              results <- limitedBuckets.parTraverse { case (dest, depDate, retDate) =>
                 flightsClient.roundTripOptions(origin, dest, depDate, retDate, skipCache).map {
                   case (quotes, cacheInfo) =>
                     FlightSearchResult(
@@ -523,66 +523,71 @@ object ApiRoutes {
                   val limitedBuckets = maxResults.fold(bucketsToSearch)(n => bucketsToSearch.take(n))
                   val total = limitedBuckets.size
 
-                  // Create SSE stream with real-time progress events
+                  // Create SSE stream with parallel fetching and real-time progress events
                   val sseStream: Stream[IO, String] = Stream.eval(
                     for {
-                      keyManager <- ApiKeyManager.create(data.apiKeys)
-                      resultsRef <- Ref.of[IO, List[FlightSearchResult]](List.empty)
-                    } yield (keyManager, resultsRef)
-                  ).flatMap { case (keyManager, resultsRef) =>
+                      keyManager  <- ApiKeyManager.create(data.apiKeys)
+                      counterRef  <- Ref.of[IO, Int](0)
+                      resultsRef  <- Ref.of[IO, List[FlightSearchResult]](List.empty)
+                      progressQ   <- cats.effect.std.Queue.unbounded[IO, Option[String]]
+                    } yield (keyManager, counterRef, resultsRef, progressQ)
+                  ).flatMap { case (keyManager, counterRef, resultsRef, progressQ) =>
                     val flightsClient = new FlightsClient(backend, keyManager, cacheDir, CACHE_TTL_SECONDS)
 
-                    // Stream progress events as each flight is fetched
-                    val progressStream = Stream.emits(limitedBuckets.zipWithIndex).evalMap { case ((dest, depDate, retDate), idx) =>
+                    // Parallel fetch all flights, emitting progress events to queue as each completes
+                    val fetchAll: IO[Unit] = limitedBuckets.parTraverse { case (dest, depDate, retDate) =>
                       flightsClient.roundTripOptions(origin, dest, depDate, retDate, skipCache).flatMap { case (quotes, cacheInfo) =>
-                        val result = FlightSearchResult(
-                          origin = origin,
-                          destination = dest,
-                          departureDate = depDate,
-                          returnDate = retDate,
-                          quotes = quotes.sortBy(_.priceUsd),
-                          cacheInfo = toQuoteCacheInfo(cacheInfo)
-                        )
-                        val progress = SearchProgress(
-                          current = idx + 1,
-                          total = total,
-                          destination = dest,
-                          departureDate = depDate,
-                          fromCache = cacheInfo.fromCache,
-                          priceUsd = quotes.sortBy(_.priceUsd).headOption.map(_.priceUsd)
-                        )
-                        resultsRef.update(_ :+ result).map { _ =>
-                          s"event: progress\ndata: ${progress.asJson.noSpaces}\n\n"
-                        }
+                        for {
+                          current <- counterRef.updateAndGet(_ + 1)
+                          result = FlightSearchResult(
+                            origin = origin,
+                            destination = dest,
+                            departureDate = depDate,
+                            returnDate = retDate,
+                            quotes = quotes.sortBy(_.priceUsd),
+                            cacheInfo = toQuoteCacheInfo(cacheInfo)
+                          )
+                          progress = SearchProgress(
+                            current = current,
+                            total = total,
+                            destination = dest,
+                            departureDate = depDate,
+                            fromCache = cacheInfo.fromCache,
+                            priceUsd = quotes.sortBy(_.priceUsd).headOption.map(_.priceUsd)
+                          )
+                          _ <- resultsRef.update(_ :+ result)
+                          _ <- progressQ.offer(Some(s"event: progress\ndata: ${progress.asJson.noSpaces}\n\n"))
+                        } yield ()
                       }
-                    }
+                    }.void
 
-                    // After all progress, emit complete event and update session
-                    val completeStream = Stream.eval {
+                    // Run parallel fetches, then signal completion
+                    val producer: IO[Unit] = fetchAll.guarantee(
                       resultsRef.get.flatMap { results =>
                         val newQuotes = results.flatMap { result =>
                           val bucket = data.allBuckets.find(b =>
                             b.key.airport.code == result.destination &&
                             b.key.weekendStart == result.departureDate
                           )
-                          bucket.map { b =>
-                            WeekendQuote(b, result.quotes, result.cacheInfo)
-                          }
+                          bucket.map(b => WeekendQuote(b, result.quotes, result.cacheInfo))
                         }
-
                         val existingQuotesMap = data.weekendQuotes.map(q => (q.bucket.key.airport.code, q.bucket.key.weekendStart) -> q).toMap
                         val newQuotesMap = newQuotes.map(q => (q.bucket.key.airport.code, q.bucket.key.weekendStart) -> q).toMap
                         val mergedQuotes = (existingQuotesMap ++ newQuotesMap).values.toList
                         val updatedData = data.copy(weekendQuotes = mergedQuotes)
 
-                        sessions.update(_ + (sessionId -> updatedData)).map { _ =>
-                          val complete = SearchComplete(results, results.map(_.quotes.size).sum)
-                          s"event: complete\ndata: ${complete.asJson.noSpaces}\n\n"
-                        }
+                        for {
+                          _ <- sessions.update(_ + (sessionId -> updatedData))
+                          complete = SearchComplete(results, results.map(_.quotes.size).sum)
+                          _ <- progressQ.offer(Some(s"event: complete\ndata: ${complete.asJson.noSpaces}\n\n"))
+                          _ <- progressQ.offer(None) // Signal end of stream
+                        } yield ()
                       }
-                    }
+                    )
 
-                    progressStream ++ completeStream
+                    // Stream from queue, concurrently with producer
+                    Stream.eval(producer.start) >>
+                      Stream.fromQueueNoneTerminated(progressQ)
                   }.handleErrorWith { err =>
                     val errorEvent = s"event: error\ndata: ${SearchError(err.getMessage).asJson.noSpaces}\n\n"
                     Stream.emit(errorEvent)
@@ -659,7 +664,7 @@ object ApiRoutes {
       // GET /api/keys/usage - Get API key usage statistics
       case req @ GET -> Root / "api" / "keys" / "usage" =>
         withSession(req) { data =>
-          data.apiKeys.traverse { key =>
+          data.apiKeys.parTraverse { key =>
             AccountClient.fetchAccountInfo(backend, key).map { result =>
               val maskedKey = data.maskKey(key)
               result match {
