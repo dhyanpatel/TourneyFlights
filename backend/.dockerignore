@@ -1,0 +1,23 @@
+# SBT
+target/
+project/target/
+project/project/
+
+# IDE
+.idea/
+.vscode/
+.bsp/
+.metals/
+.bloop/
+
+# Environment
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.log
+*.md

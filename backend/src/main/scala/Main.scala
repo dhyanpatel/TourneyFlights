@@ -8,8 +8,15 @@ import scala.concurrent.duration._
 
 object Main extends IOApp.Simple {
 
+  private def getPort: Port =
+    sys.env.get("PORT")
+      .flatMap(_.toIntOption)
+      .flatMap(Port.fromInt)
+      .getOrElse(port"8080")
+
   def run: IO[Unit] =
     HttpClientCatsBackend.resource[IO]().use { backend =>
+      val serverPort = getPort
       for {
         // Create thread-safe session store
         sessions <- Ref.of[IO, Map[String, ApiRoutes.SessionData]](Map.empty)
@@ -23,7 +30,7 @@ object Main extends IOApp.Simple {
         // Add request/response logging
         loggedApp = Logger.httpApp(logHeaders = false, logBody = false)(httpApp)
 
-        _ <- IO.println("Starting TourneyFlights API server on http://localhost:8080")
+        _ <- IO.println(s"Starting TourneyFlights API server on http://localhost:$serverPort")
         _ <- IO.println("")
         _ <- IO.println("Session Management:")
         _ <- IO.println("  POST   /api/session         - Create session")
@@ -51,7 +58,7 @@ object Main extends IOApp.Simple {
         _ <- EmberServerBuilder
           .default[IO]
           .withHost(host"0.0.0.0")
-          .withPort(port"8080")
+          .withPort(serverPort)
           .withHttpApp(loggedApp)
           .withShutdownTimeout(10.seconds)
           .build
