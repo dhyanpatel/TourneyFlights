@@ -6,15 +6,23 @@ on:
   push:
     branches:
       - main
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend     # <--- run all shell commands from frontend/
     steps:
       - uses: actions/checkout@v4
-      - run: npm ci && npm run build
+
+      - run: npm ci
+      - run: npm run build
+
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_TOURNEY_FLIGHTS }}
           channelId: live
           projectId: tourney-flights
+          entryPoint: frontend          # <--- tells the action where firebase.json is
